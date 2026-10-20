@@ -1,0 +1,11 @@
+[Unit]
+Description=Check completed backup archives every minute
+
+[Timer]
+OnBootSec=1min
+OnUnitActiveSec=1min
+Persistent=true
+Unit=backup-ready-notify.service
+
+[Install]
+WantedBy=timers.target

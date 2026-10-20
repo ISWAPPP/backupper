@@ -1,0 +1,8 @@
+[Unit]
+Description=Renew Let's Encrypt IP certificate
+After=network-online.target nginx.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/opt/certbot-ip/bin/certbot renew --non-interactive --config-dir /etc/letsencrypt-ip-prod --work-dir /var/lib/letsencrypt-ip-prod --logs-dir /var/log/letsencrypt-ip-prod --deploy-hook "systemctl reload nginx"

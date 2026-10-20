@@ -1,0 +1,12 @@
+[Unit]
+Description=Backup pipeline end-to-end probe
+After=network-online.target backup-api.service ssh.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/backup-probe
+TimeoutStartSec=180
+User=root
+StandardOutput=journal
+StandardError=journal

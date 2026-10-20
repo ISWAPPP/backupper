@@ -1,0 +1,11 @@
+[Unit]
+Description=Run backup pipeline probe daily
+
+[Timer]
+OnCalendar=*-*-* 04:30:00 UTC
+Persistent=true
+RandomizedDelaySec=5m
+Unit=backup-probe.service
+
+[Install]
+WantedBy=timers.target

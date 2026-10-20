@@ -1,0 +1,19 @@
+# Reduced from the source server; no old administrator IP allowlist.
+[DEFAULT]
+ignoreip = 127.0.0.1/8 ::1
+bantime = 10m
+findtime = 10m
+maxretry = 5
+
+[sshd]
+enabled = true
+maxretry = 3
+
+[nginx-404]
+enabled = true
+port = http,https
+filter = nginx-404
+logpath = /var/log/nginx/access.log
+maxretry = 10
+findtime = 60
+bantime = 3h

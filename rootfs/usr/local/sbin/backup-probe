@@ -1,0 +1,126 @@
+#!/usr/bin/env python3
+"""End-to-end local backup probe; no production archives are touched."""
+import json
+import os
+import pathlib
+import shutil
+import ssl
+import subprocess
+import sys
+import tarfile
+import tempfile
+import time
+import urllib.error
+import urllib.parse
+import urllib.request
+import uuid
+
+BASE = "http://127.0.0.1:8000"
+ARCHIVES = pathlib.Path("/var/www/backups")
+STATE = pathlib.Path("/var/lib/backup-probe/state.json")
+WEBHOOK = pathlib.Path("/etc/backup-probe/discord-webhook")
+DOMAIN = "https://@@PUBLIC_HOST@@/disk_space"
+
+
+def post(path, fields):
+    data = urllib.parse.urlencode(fields).encode()
+    with urllib.request.urlopen(urllib.request.Request(BASE + path, data=data), timeout=15) as resp:
+        return resp.read().decode().strip()
+
+
+def notify(text):
+    if not WEBHOOK.exists():
+        print("ALERT DELIVERY UNCONFIGURED", file=sys.stderr)
+        return
+    data = json.dumps({"content": text, "allowed_mentions": {"parse": []}}).encode()
+    # Discord's edge rejects Python urllib's TLS fingerprint (HTTP 403/1010).
+    result = subprocess.run(
+        ["curl", "-fsS", "--max-time", "15", "--retry", "2", "-o", "/dev/null",
+         "-K", "/etc/backup-probe/curl.conf", "-H", "Content-Type: application/json", "--data-binary", "@-"],
+        input=data, capture_output=True, timeout=40,
+    )
+    if result.returncode:
+        raise RuntimeError(f"Discord notification failed: {result.stderr.decode()[:300]}")
+    print("Discord notification delivered")
+
+
+def probe():
+    session = None
+    marker = "probe-" + uuid.uuid4().hex
+    with tempfile.TemporaryDirectory(prefix="backup-probe-") as tmp:
+        tmp = pathlib.Path(tmp)
+        try:
+            tls_error = None
+            try:
+                with urllib.request.urlopen(DOMAIN, timeout=12, context=ssl.create_default_context()) as resp:
+                    if resp.status != 200:
+                        raise RuntimeError(f"HTTPS health returned {resp.status}")
+            except Exception as exc:
+                tls_error = f"HTTPS: {type(exc).__name__}: {exc}"
+            key = tmp / "key"
+            subprocess.run(["ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-f", str(key)], check=True, timeout=15)
+            session = post("/register_key", {"key": key.with_suffix(".pub").read_text().strip()})
+            uuid.UUID(session)
+            payload = tmp / "probe.txt"
+            payload.write_text(marker + "\n")
+            subprocess.run(["rsync", "-a", "-e", f"ssh -i {key} -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile=/etc/backup-probe/known_hosts -o ConnectTimeout=10", str(payload), "backupuser@127.0.0.1:."], check=True, capture_output=True, timeout=30)
+            post("/create_archive", {"session_id": session})
+            archive = ARCHIVES / (session + ".tar.gz")
+            for _ in range(30):
+                if archive.is_file() and not (ARCHIVES / (session + ".status")).exists():
+                    break
+                time.sleep(1)
+            else:
+                raise RuntimeError("archive not ready within 30 seconds")
+            with tarfile.open(archive, "r:gz") as tf:
+                member = tf.extractfile("backup/probe.txt")
+                if member is None or member.read().decode() != marker + "\n":
+                    raise RuntimeError("archive restore content mismatch")
+            with urllib.request.urlopen(BASE + "/status/" + session, timeout=15) as resp:
+                if resp.status != 200 or resp.read(2) != b"\x1f\x8b":
+                    raise RuntimeError("archive download failed")
+            print("PASS: API, rsync, archive, restore, download")
+            if tls_error:
+                raise RuntimeError(tls_error)
+            print("PASS: HTTPS TLS")
+        finally:
+            if session:
+                try:
+                    post("/cancel_session", {"session_id": session})
+                except Exception as exc:
+                    print(f"Cleanup session warning: {exc}", file=sys.stderr)
+                for suffix in (".tar.gz", ".status", ".size"):
+                    (ARCHIVES / (session + suffix)).unlink(missing_ok=True)
+
+
+def main():
+    STATE.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    previous = {}
+    if STATE.exists():
+        try:
+            previous = json.loads(STATE.read_text())
+        except (ValueError, OSError):
+            pass
+    was_failed = previous.get("failed", False)
+    error = None
+    try:
+        probe()
+    except Exception as exc:
+        error = f"{type(exc).__name__}: {exc}"
+        print("FAIL: " + error, file=sys.stderr)
+    failed = error is not None
+    now = int(time.time())
+    alert_time = previous.get("alert_time", 0)
+    if failed and (not was_failed or now - alert_time >= 86400):
+        notify("🚨 Backup VPS probe FAILED: " + error[:1500])
+        alert_time = now
+    elif not failed and was_failed:
+        notify("✅ Backup VPS probe RECOVERED: TLS, API, rsync, restore and download work.")
+        alert_time = now
+    STATE.write_text(json.dumps({"failed": failed, "time": now, "alert_time": alert_time, "error": error}) + "\n")
+    if failed:
+        sys.exit(1)
+
+
+if __name__ == "__main__":
+    main()

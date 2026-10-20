@@ -1,0 +1,10 @@
+[Unit]
+Description=Notify Discord when a client backup archive is complete
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/backup-ready-notify
+TimeoutStartSec=90
+User=root
+StandardOutput=journal
+StandardError=journal

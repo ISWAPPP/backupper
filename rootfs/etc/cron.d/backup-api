@@ -1,0 +1,1 @@
+0 3 * * * root /opt/backup-api/cleanup-backups.sh >> /var/log/backup-cleanup.log 2>&1
